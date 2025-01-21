@@ -1,5 +1,5 @@
 /*!
- *  Copyright (c) 2023-2024 by Contributors
+ *  Copyright (c) 2023-2025 by Contributors
  * \file serve/model.cc
  * \brief The implementation of runtime module of LLM functions (prefill/decode/etc.)
  */
@@ -13,6 +13,7 @@
 #include <fstream>
 
 #include "../support/json_parser.h"
+#include "../support/vlm_utils.h"
 #include "config.h"
 #include "logit_processor.h"
 
@@ -113,8 +114,19 @@ class ModelImpl : public ModelObj {
   ObjectRef ImageEmbed(const NDArray& image, ObjectRef* dst, int offset) final {
     NVTXScopedRange nvtx_scope("ImageEmbed");
     CHECK(ft_.image_embed_func_.defined()) << "`image_embed` function is not found in the model. ";
+
+    int tmp_h = 0, tmp_w = 0;
+    CalculateResizeShape(image, this->model_type_, &tmp_h, &tmp_w);
+    ShapeTuple resize_h = {tmp_h};
+    ShapeTuple resize_w = {tmp_w};
+
+    CalculateCropShape(image, this->model_type_, &tmp_h, &tmp_w);
+    ShapeTuple crop_h = {tmp_h};
+    ShapeTuple crop_w = {tmp_w};
+
     auto image_dref_or_nd = ft_.CopyToWorker0(image, "image", image.Shape());
-    ObjectRef embeddings = ft_.image_embed_func_(image_dref_or_nd, params_);
+    ObjectRef embeddings =
+        ft_.image_embed_func_(image_dref_or_nd, resize_h, resize_w, crop_h, crop_w, params_);
     if (dst != nullptr) {
       CHECK(dst->defined());
       ft_.nd_copy_embedding_to_offset_func_(embeddings, *dst, offset);
@@ -754,6 +766,38 @@ class ModelImpl : public ModelObj {
     }
   }
 
+  IntTuple DisaggPrepareKVRecv(int64_t seq_id, int length) final {
+    NVTXScopedRange nvtx_scope("DisaggPrepareKVRecv length=" + std::to_string(length));
+
+    ICHECK(ft_.kv_cache_disagg_prepare_recv_func_.defined());
+    ICHECK(kv_cache_.defined()) << "KV cache has not been initialized.";
+
+    // Run KV receive preparation.
+    ObjectRef ret;
+    ret = ft_.kv_cache_disagg_prepare_recv_func_(kv_cache_, seq_id, length);
+    IntTuple compressed_kv_append_metadata;
+    if (ft_.use_disco) {
+      compressed_kv_append_metadata = Downcast<DRef>(ret)->DebugGetFromRemote(0);
+    } else {
+      compressed_kv_append_metadata = Downcast<IntTuple>(ret);
+    }
+
+    return compressed_kv_append_metadata;
+  }
+
+  void DisaggMarkKVSend(int64_t seq_id, int begin_pos, IntTuple compressed_kv_append_metadata,
+                        int dst_group_offset) final {
+    NVTXScopedRange nvtx_scope("DisaggMarkKVSend seq_id=" + std::to_string(seq_id) +
+                               " begin_pos=" + std::to_string(begin_pos));
+
+    ICHECK(ft_.kv_cache_disagg_mark_send_func_.defined());
+    ICHECK(kv_cache_.defined()) << "KV cache has not been initialized.";
+
+    // Run KV send preparation.
+    ft_.kv_cache_disagg_mark_send_func_(kv_cache_, seq_id, begin_pos, compressed_kv_append_metadata,
+                                        dst_group_offset);
+  }
+
   /************** Raw Info Query **************/
 
   ModelMetadata GetMetadata() const final { return ft_.model_metadata_; }
@@ -956,8 +1000,8 @@ class ModelImpl : public ModelObj {
 
   /************** Debug/Profile **************/
 
-  void DebugCallFuncOnAllAllWorker(const String& func_name) final {
-    ft_.DebugCallFuncOnAllAllWorker(func_name);
+  void DebugCallFuncOnAllAllWorker(const String& func_name, Optional<String> func_args) final {
+    ft_.DebugCallFuncOnAllAllWorker(func_name, func_args);
   }
 
  private:
@@ -971,6 +1015,7 @@ class ModelImpl : public ModelObj {
         json::LookupOrDefault<int64_t>(config, "attention_sink_size", this->attention_sink_size_);
     this->attention_sink_size_ = std::max(this->attention_sink_size_, 0);
     this->vocab_size_ = json::Lookup<int64_t>(config, "vocab_size");
+    this->model_type_ = json::Lookup<std::string>(config, "model_type");
   }
 
   //----------------------------
@@ -987,6 +1032,7 @@ class ModelImpl : public ModelObj {
   DLDataType hidden_states_dtype_;
   int vocab_size_ = -1;
   int image_embed_size_ = -1;
+  std::string model_type_;
   //----------------------------
   // TVM related states
   //----------------------------

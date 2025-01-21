@@ -1,5 +1,5 @@
 /*!
- *  Copyright (c) 2024 by Contributors
+ *  Copyright (c) 2023-2025 by Contributors
  * \file serve/engine_actions/batch_prefill_base.h
  */
 
@@ -94,6 +94,9 @@ BatchPrefillBaseActionObj::GetRequestStateEntriesToPrefill(EngineState estate) {
     int num_prefill_rsentries = 0;
     for (const Request& request : estate->waiting_queue) {
       NVTXScopedRange nvtx_scope("Process request " + request->id);
+      if (request->generation_cfg->debug_config.disagg_config.kind != DisaggRequestKind::kNone) {
+        continue;
+      }
       RequestState rstate = estate->GetRequestState(request);
       bool prefill_stops = false;
       for (const RequestStateEntry& rsentry : rstate->entries) {

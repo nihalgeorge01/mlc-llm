@@ -9,7 +9,6 @@
 from . import (
     cohere,
     deepseek,
-    deepseek_v2,
     dolly,
     gemma,
     glm,
@@ -19,7 +18,9 @@ from . import (
     llama,
     llava,
     mistral,
+    nemotron,
     oasst,
+    olmo,
     orion,
     phi,
     qwen2,
