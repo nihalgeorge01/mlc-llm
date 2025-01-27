@@ -187,7 +187,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset-path",
         type=str,
-        required=True,
         help="The dataset file path.",
     )
     parser.add_argument(
@@ -247,6 +246,14 @@ if __name__ == "__main__":
         'by commas(","). '
         "When specified, the benchmark sends these many new requests each second. "
         'If it is "inf", all requests will be sent together at once.',
+    )
+    parser.add_argument(
+        "--replay-timestamp-scale",
+        type=float,
+        help="The timestamp scale when replaying the timestamps in a dataset. "
+        'The dataset replay mode is enabled when neither "--num-concurrent-requests" and '
+        '"--request-rate" is specified. '
+        "The scale is 1 by default in the replay mode.",
     )
     parser.add_argument(
         "--input-len",
